@@ -6,6 +6,10 @@ Usage:
   setup.py remove <address> [--chain CHAIN]
   setup.py list
   setup.py label <text>
+  setup.py asset add usdc|native|<contract> [--chain CHAIN|*] [--symbol S] [--decimals N] [--stable]
+  setup.py asset remove usdc|native|<contract> [--chain CHAIN|*]
+  setup.py display auto|asset|chain|none   # breakdown shown after the total
+  setup.py status [--json]                 # wallets, tracked assets, untracked options
   setup.py rpc <chain> <url> [<url> ...]   # override RPCs; no urls = reset to defaults
   setup.py install [--force]               # register the statusLine in ~/.claude/settings.json
   setup.py uninstall                       # remove it (restores a replaced one, if any)
@@ -25,7 +29,16 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
-from statusline import CACHE_FILE, CHAINS, CONFIG_FILE, HOME_DIR  # noqa: E402
+from statusline import (  # noqa: E402
+    CHAINS,
+    CONFIG_FILE,
+    DEFAULT_ASSETS,
+    HOME_DIR,
+    fetch_prices,
+    resolve_assets,
+    rpc_with_fallback,
+    wallet_chains,
+)
 
 HOME = Path(HOME_DIR)
 CONFIG = Path(CONFIG_FILE)
@@ -54,10 +67,14 @@ def save_json(path, data):
 
 def save_config(config):
     save_json(CONFIG, config)
-    try:
-        os.remove(CACHE_FILE)  # drop numbers for the old wallet set
-    except OSError:
-        pass
+    sync_installed_script()
+
+
+def sync_installed_script():
+    """Keep the installed copy in step with this skill version (e.g. after `git pull`)."""
+    src = SCRIPT_DIR / "statusline.py"
+    if INSTALLED_SCRIPT.exists() and INSTALLED_SCRIPT.read_bytes() != src.read_bytes():
+        shutil.copy2(src, INSTALLED_SCRIPT)
 
 
 def detect_chain(address, chain):
@@ -111,6 +128,11 @@ def cmd_list(_args):
     for w in config.get("wallets", []):
         name = f"  ({w['name']})" if w.get("name") else ""
         print(f"{w['chain']:<9} {w['address']}{name}")
+    print(f"display: {config.get('display', 'auto')}")
+    print("assets:")
+    for e in config.get("assets", DEFAULT_ASSETS):
+        what = e["kind"] if e["kind"] != "token" else f"{e.get('symbol')} {e['address']}"
+        print(f"  {e['chain']:<9} {what}")
     for chain, urls in (config.get("rpc") or {}).items():
         print(f"rpc {chain}: {', '.join(urls)}")
     print(f"config: {CONFIG}")
@@ -119,7 +141,7 @@ def cmd_list(_args):
 def cmd_label(args):
     config = load_config()
     config["label"] = args.text
-    save_json(CONFIG, config)
+    save_config(config)
     print(f"Label set to {args.text!r}")
 
 
@@ -134,8 +156,175 @@ def cmd_rpc(args):
     else:
         rpc.pop(args.chain, None)
         print(f"{args.chain} RPCs reset to defaults")
-    save_json(CONFIG, config)  # balances stay valid; keep the cache
+    save_config(config)
 
+
+# ---------------------------------------------------------------- assets
+
+def evm_string(raw):
+    """Decode an ABI string (or bytes32) return value."""
+    b = bytes.fromhex(raw[2:]) if raw and raw != "0x" else b""
+    if len(b) >= 96:
+        length = int.from_bytes(b[32:64], "big")
+        b = b[64:64 + length]
+    return b.rstrip(b"\0").decode("utf-8", "ignore").strip()
+
+
+def token_metadata(config, chain, address):
+    """Symbol + decimals for a contract/mint: DeFiLlama first, then the chain itself."""
+    meta = {}
+    try:
+        info = fetch_prices({f"{CHAINS[chain]['llama']}:{address}"})
+        meta = next(iter(info.values()), {})
+    except Exception:
+        pass
+    symbol, decimals = meta.get("symbol"), meta.get("decimals")
+    rpcs = (config.get("rpc") or {}).get(chain) or CHAINS[chain]["rpcs"]
+    if CHAINS[chain]["kind"] == "solana":
+        if decimals is None:
+            acc = rpc_with_fallback(rpcs, "getAccountInfo", [address, {"encoding": "jsonParsed"}])["value"]
+            parsed = (acc or {}).get("data", {})
+            parsed = parsed.get("parsed") if isinstance(parsed, dict) else None
+            if not parsed or parsed.get("type") != "mint":
+                raise ValueError(f"{address} is not a token mint on Solana")
+            decimals = parsed["info"]["decimals"]
+    else:
+        if decimals is None:
+            raw = rpc_with_fallback(rpcs, "eth_call", [{"to": address, "data": "0x313ce567"}, "latest"])
+            if not raw or raw == "0x":
+                raise ValueError(f"{address} is not an ERC-20 token on {chain}")
+            decimals = int(raw, 16)
+        if not symbol:
+            try:
+                symbol = evm_string(rpc_with_fallback(rpcs, "eth_call", [{"to": address, "data": "0x95d89b41"}, "latest"]))
+            except Exception:
+                pass
+    return symbol, int(decimals), meta.get("price")
+
+
+def parse_asset_target(what, chain, config):
+    """-> (kind, chain, address|None)."""
+    low = what.lower()
+    if low in ("usdc", "native", "gas"):
+        if chain not in (None, "*") and chain not in CHAINS:
+            sys.exit(f"Unknown chain {chain}; choose from: *, {', '.join(CHAINS)}")
+        return ("usdc" if low == "usdc" else "native"), (chain or "*"), None
+    if EVM_RE.match(what):
+        evm_with_wallets = [c for c in wallet_chains(config) if c in EVM_CHAINS]
+        if chain is None:
+            if len(evm_with_wallets) != 1:
+                sys.exit("Which EVM chain is this token on? Pass --chain "
+                         f"({', '.join(evm_with_wallets or EVM_CHAINS)}).")
+            chain = evm_with_wallets[0]
+        if chain not in EVM_CHAINS:
+            sys.exit(f"{what} is an EVM contract; --chain must be one of: {', '.join(EVM_CHAINS)}")
+        return "token", chain, what.lower()
+    if SOLANA_RE.match(what):
+        if chain not in (None, "solana"):
+            sys.exit(f"{what} looks like a Solana mint, not a {chain} contract")
+        return "token", "solana", what
+    sys.exit(f"Expected usdc, native or a token contract address, got: {what}")
+
+
+def entry_matches(e, kind, chain, address):
+    if e.get("kind") != kind or e.get("chain") != chain:
+        return False
+    return kind != "token" or e.get("address", "").lower() == address.lower()
+
+
+def cmd_asset_add(args):
+    config = load_config()
+    kind, chain, address = parse_asset_target(args.what.strip(), args.chain, config)
+    assets = config.setdefault("assets", [dict(a) for a in DEFAULT_ASSETS])
+    if any(entry_matches(e, kind, chain, address) for e in assets):
+        print("Already tracked.")
+        return
+    entry = {"chain": chain, "kind": kind}
+    label = kind if chain == "*" else f"{kind} on {chain}"
+    if kind == "token":
+        try:
+            symbol, decimals, price = token_metadata(config, chain, address)
+        except Exception as err:
+            sys.exit(f"Could not read token {address} on {chain}: {err}")
+        if args.decimals is not None:
+            decimals = args.decimals
+        if symbol and symbol.islower():
+            symbol = symbol.upper()
+        symbol = args.symbol or symbol or address[:6]
+        entry.update(address=address, symbol=symbol, decimals=decimals)
+        if args.stable:
+            entry["stable"] = True
+        label = f"{symbol} on {chain} (decimals {decimals}, " + (
+            f"price ${price:,.2f})" if price is not None and price >= 1 else
+            f"price ${price:.4g})" if price is not None else "no price source: amount only)")
+    if chain not in ("*",) and chain not in wallet_chains(config):
+        print(f"Note: no {chain} wallet is tracked yet, so this shows up once you add one.")
+    assets.append(entry)
+    save_config(config)
+    print(f"Tracking {label}")
+
+
+def cmd_asset_remove(args):
+    config = load_config()
+    kind, chain, address = parse_asset_target(args.what.strip(), args.chain, config)
+    assets = config.setdefault("assets", [dict(a) for a in DEFAULT_ASSETS])
+    before = len(assets)
+    if kind != "token" and chain == "*":
+        # "*" removes the kind everywhere: the wildcard entry and any per-chain ones.
+        config["assets"] = [e for e in assets if e.get("kind") != kind]
+    else:
+        config["assets"] = [e for e in assets if not entry_matches(e, kind, chain, address)]
+        if kind != "token" and len(config["assets"]) == before and chain in wallet_chains(config) and any(
+            e.get("kind") == kind and e.get("chain") == "*" for e in assets
+        ):
+            # Narrow a wildcard: keep the kind on every other chain that has wallets.
+            config["assets"] = [e for e in assets if not (e.get("kind") == kind and e.get("chain") == "*")]
+            config["assets"] += [{"chain": c, "kind": kind} for c in wallet_chains(config) if c != chain]
+    if config["assets"] == assets:
+        sys.exit("That asset is not tracked.")
+    save_config(config)
+    print(f"Stopped tracking {args.what}" + (f" on {chain}" if chain != "*" else ""))
+
+
+def cmd_display(args):
+    config = load_config()
+    config["display"] = args.mode
+    save_config(config)
+    print(f"Breakdown: {args.mode}")
+
+
+def cmd_status(args):
+    config = load_config()
+    resolved = resolve_assets(config)
+    tracked = {(a["chain"], a["id"]) for a in resolved}
+    chains = wallet_chains(config)
+    options = []
+    for c in chains:
+        n = CHAINS[c]["native"]
+        options.append({"chain": c, "kind": "native", "symbol": n["symbol"], "tracked": (c, "native") in tracked,
+                        "command": f"asset add native --chain {c}"})
+        options.append({"chain": c, "kind": "usdc", "symbol": "USDC", "tracked": (c, "usdc") in tracked,
+                        "command": f"asset add usdc --chain {c}"})
+    status = {
+        "label": config.get("label", "WALLET"),
+        "display": config.get("display", "auto"),
+        "wallets": config.get("wallets", []),
+        "chains_with_wallets": chains,
+        "tracked": [{k: a.get(k) for k in ("chain", "symbol", "kind", "address")} for a in resolved],
+        "untracked_options": [o for o in options if not o["tracked"]],
+        "supported_chains": list(CHAINS),
+        "installed": (load_settings().get("statusLine") or {}).get("command") == our_command(),
+    }
+    if args.json:
+        print(json.dumps(status, indent=2))
+        return
+    print(f"installed: {status['installed']}   display: {status['display']}")
+    print("wallets:", ", ".join(f"{w['chain']} {w['address']}" for w in status["wallets"]) or "none")
+    print("tracking:", ", ".join(f"{t['symbol']}@{t['chain']}" for t in status["tracked"]) or "nothing")
+    print("can add:", ", ".join(f"{o['symbol']}@{o['chain']}" for o in status["untracked_options"]) or "-")
+
+
+# ---------------------------------------------------------------- settings
 
 def load_settings():
     if not SETTINGS.exists():
@@ -213,6 +402,25 @@ def main():
     p = sub.add_parser("label", help="set the label shown before the total")
     p.add_argument("text")
     p.set_defaults(func=cmd_label)
+
+    asset = sub.add_parser("asset", help="choose which assets are counted").add_subparsers(dest="asset_cmd", required=True)
+    for name, func, help_ in (("add", cmd_asset_add, "track an asset"), ("remove", cmd_asset_remove, "stop tracking it")):
+        p = asset.add_parser(name, help=help_)
+        p.add_argument("what", help="usdc, native (gas token: SOL/ETH/POL) or a token contract/mint address")
+        p.add_argument("--chain", help="chain, or * for every chain with a wallet (default for usdc/native)")
+        if name == "add":
+            p.add_argument("--symbol", help="override the detected symbol")
+            p.add_argument("--decimals", type=int, help="override the detected decimals")
+            p.add_argument("--stable", action="store_true", help="value it at $1 (USD stablecoin)")
+        p.set_defaults(func=func)
+
+    p = sub.add_parser("display", help="breakdown after the total")
+    p.add_argument("mode", choices=["auto", "asset", "chain", "none"])
+    p.set_defaults(func=cmd_display)
+
+    p = sub.add_parser("status", help="wallets, tracked assets and what else can be added")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_status)
 
     p = sub.add_parser("rpc", help="override RPC endpoints for a chain")
     p.add_argument("chain")
