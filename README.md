@@ -15,7 +15,19 @@ USDC is tracked by default. Gas tokens (SOL, ETH, POL) and any token by contract
 
 Supported chains: Solana, Base, Ethereum, Arbitrum, Optimism, Polygon.
 
-## Install
+> Built by the team behind **[AgentLayer](https://github.com/lopushok9/Agent-Layer)**, a wallet for AI agents: x402 payments, stablecoins, swaps, DeFi yield and tokenized stocks across the most popular chains.
+
+## Quick start
+
+Paste this into Claude Code:
+
+```
+Set up a wallet balance status line for me by following https://raw.githubusercontent.com/lopushok9/claude-wallet-statusline/main/AGENT_SETUP.md
+```
+
+The agent installs the skill, asks for your public address(es) and which assets to count, and turns the status line on. Restart Claude Code to see it. The step-by-step instructions it follows are in [AGENT_SETUP.md](AGENT_SETUP.md).
+
+## Install manually
 
 ```sh
 git clone https://github.com/lopushok9/claude-wallet-statusline ~/.claude/skills/wallet-statusline
@@ -24,8 +36,6 @@ git clone https://github.com/lopushok9/claude-wallet-statusline ~/.claude/skills
 Then ask Claude Code something like:
 
 > show my wallet 0xAbC… and Hu7x… in the status line
-
-Claude adds the addresses and registers the status line. Restart Claude Code to see it.
 
 ### Without Claude
 
@@ -75,6 +85,10 @@ Set `WALLET_STATUSLINE_HOME` to keep the config somewhere other than `~/.wallet-
 ## Privacy
 
 Your addresses are sent to the public RPC providers (PublicNode, Solana Foundation, chain foundations, dRPC), and the token ids to DeFiLlama. Both can see your IP. To avoid that, point each chain at your own node with `setup.py rpc`.
+
+## About
+
+Developed by the [AgentLayer](https://github.com/lopushok9/Agent-Layer) team. If you want your agent to not only watch balances but also pay, swap and earn from its own wallet, take a look at AgentLayer.
 
 ## License
 
