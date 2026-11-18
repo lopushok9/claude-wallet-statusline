@@ -1,5 +1,7 @@
 # claude-wallet-statusline
 
+![Wallet balance in the Claude Code status line](assets/wallet-statusline.png)
+
 A [Claude Code](https://docs.claude.com/en/docs/claude-code) skill that shows live balances of any public wallet address in the status line:
 
 ```
