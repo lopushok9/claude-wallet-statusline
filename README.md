@@ -8,14 +8,26 @@ A [Claude Code](https://docs.claude.com/en/docs/claude-code) skill that shows li
 WALLET $1,240.50 (1.25 SOL $210.40 · USDC $1,000.00 · 0.012 ETH $30.10)
 ```
 
-USDC is tracked by default. Gas tokens (SOL, ETH, POL) and any token by contract address are opt-in: ask Claude ("also track SOL", "add token 0x…") or pick from the menu it shows.
+USDC is tracked by default. Gas tokens (SOL, ETH, POL, NEAR) and any token by contract address are opt-in: ask Claude ("also track SOL", "add token 0x…") or pick from the menu it shows.
 
 - **Watch-only**: you give it public addresses. No keys, seed phrases or wallet connection.
 - **Keyless**: balances come straight from public RPCs and prices from the free DeFiLlama API. No accounts or API keys.
 - **Fast**: a 30 s on-disk cache, parallel requests, a 2.5 s timeout and a fallback RPC per chain.
 - **No dependencies**: Python 3.9+ standard library only.
 
-Supported chains: Solana, Base, Ethereum, Arbitrum, Optimism, Polygon.
+## Supported chains
+
+| Chain | Gas token | USDC (default) | Custom tokens | Public RPCs (in fallback order) |
+|---|---|---|---|---|
+| Solana | SOL | ✅ | SPL / Token-2022 mint | `api.mainnet-beta.solana.com`, `solana-rpc.publicnode.com`* |
+| NEAR | NEAR | ✅ | NEP-141 contract (`usdt.tether-token.near`) | `free.rpc.fastnear.com`, `near.drpc.org` |
+| Base | ETH | ✅ | ERC-20 | `base-rpc.publicnode.com`, `mainnet.base.org` |
+| Ethereum | ETH | ✅ | ERC-20 | `ethereum-rpc.publicnode.com`, `eth.drpc.org` |
+| Arbitrum | ETH | ✅ | ERC-20 | `arbitrum-one-rpc.publicnode.com`, `arb1.arbitrum.io/rpc` |
+| Optimism | ETH | ✅ | ERC-20 | `optimism-rpc.publicnode.com`, `optimism.drpc.org` |
+| Polygon | POL | ✅ | ERC-20 | `polygon-bor-rpc.publicnode.com`, `polygon.drpc.org` |
+
+All endpoints are free and keyless. \*PublicNode serves SOL balances but not token balances on Solana, so Solana tokens rely on the main endpoint, which is rate-limited. For heavy use, set your own (e.g. a free Helius key): `setup.py rpc solana https://mainnet.helius-rpc.com/?api-key=…`. Prices come from `coins.llama.fi`. Replace any chain's RPCs with your own via `setup.py rpc <chain> <url>…`.
 
 > Built by the team behind **[AgentLayer](https://github.com/lopushok9/Agent-Layer)**, a wallet for AI agents: x402 payments, stablecoins, swaps, DeFi yield and tokenized stocks across the most popular chains.
 
@@ -46,6 +58,7 @@ cd ~/.claude/skills/wallet-statusline
 python3 scripts/setup.py add 0xYourBaseAddress            # EVM defaults to Base
 python3 scripts/setup.py add 0xYourAddress --chain arbitrum
 python3 scripts/setup.py add YourSolanaAddress            # auto-detected
+python3 scripts/setup.py add alice.near                   # NEAR, auto-detected
 python3 scripts/setup.py asset add native                 # gas tokens on every wallet chain
 python3 scripts/setup.py asset add <token contract> --chain base
 python3 scripts/setup.py install
@@ -79,6 +92,7 @@ python3 scripts/setup.py render                           # preview once
 3. otherwise fetches, all in parallel:
    - Solana: `getBalance` (SOL) and `getTokenAccountsByOwner` per mint (SPL and Token-2022);
    - EVM: `eth_getBalance` (gas token) and `eth_call` → `balanceOf(address)` per token;
+   - NEAR: `view_account` (NEAR) and `ft_balance_of` per NEP-141 token;
    - prices: one request to `coins.llama.fi/prices/current/…` for all non-stable assets;
 4. if an RPC fails it tries the next one, then falls back to the cached value and puts `~` in front of the line. A token with no price is shown as an amount and left out of the USD total.
 
@@ -86,7 +100,7 @@ Set `WALLET_STATUSLINE_HOME` to keep the config somewhere other than `~/.wallet-
 
 ## Privacy
 
-Your addresses are sent to the public RPC providers (PublicNode, Solana Foundation, chain foundations, dRPC), and the token ids to DeFiLlama. Both can see your IP. To avoid that, point each chain at your own node with `setup.py rpc`.
+Your addresses are sent to the public RPC providers (PublicNode, Solana Foundation, FastNEAR, chain foundations, dRPC), and the token ids to DeFiLlama. Both can see your IP. To avoid that, point each chain at your own node with `setup.py rpc`.
 
 ## About
 

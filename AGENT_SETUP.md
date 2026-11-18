@@ -33,7 +33,8 @@ the user and ask whether to keep, add to or replace them.
 **Ask** for the wallet address(es) unless the user already gave them. For each
 EVM address (`0x…`) also ask which chain it is on if they didn't say: Base,
 Ethereum, Arbitrum, Optimism or Polygon. If they don't care, use Base. Solana
-addresses are detected automatically.
+addresses and NEAR accounts (`alice.near`, 64-hex implicit) are detected
+automatically; a NEAR name without a dot (e.g. `aurora`) needs `--chain near`.
 
 ```sh
 setup.py add <address>                      # Solana, or EVM on Base
@@ -47,7 +48,7 @@ typo in the address) before going on.
 
 ## 3. Choose what to count
 
-USDC is counted on every wallet chain by default. Gas tokens (SOL, ETH, POL)
+USDC is counted on every wallet chain by default. Gas tokens (SOL, ETH, POL, NEAR)
 and other tokens are opt-in.
 
 If the user already said what to track, add it directly:
@@ -55,6 +56,7 @@ If the user already said what to track, add it directly:
 ```sh
 setup.py asset add native --chain solana    # SOL
 setup.py asset add native --chain base      # ETH on Base
+setup.py asset add native --chain near      # NEAR
 setup.py asset add native                   # gas token on every wallet chain
 setup.py asset add <contract or mint>       # any token; add --chain <evm chain> if asked
 setup.py asset remove usdc                  # stop counting USDC
@@ -121,4 +123,4 @@ Then tell them:
 | `install [--force]` / `uninstall` | Turn the status line on / off |
 | `render` | Print the line once |
 
-Supported chains: `solana`, `base`, `ethereum`, `arbitrum`, `optimism`, `polygon`.
+Supported chains: `solana`, `near`, `base`, `ethereum`, `arbitrum`, `optimism`, `polygon`.

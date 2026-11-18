@@ -1,6 +1,6 @@
 ---
 name: wallet-statusline
-description: Show live balances of public wallet addresses (Solana, Base, Ethereum, Arbitrum, Optimism, Polygon) in the Claude Code status line. USDC by default; optionally gas tokens (SOL, ETH, POL) and any token by contract address. Use when the user wants a wallet balance in the status line, or wants to add/remove wallets or tokens, change what the line shows, change RPCs, or turn it off.
+description: Show live balances of public wallet addresses (Solana, NEAR, Base, Ethereum, Arbitrum, Optimism, Polygon) in the Claude Code status line. USDC by default; optionally gas tokens (SOL, ETH, POL, NEAR) and any token by contract address. Use when the user wants a wallet balance in the status line, or wants to add/remove wallets or tokens, change what the line shows, change RPCs, or turn it off.
 ---
 
 # Wallet status line
@@ -22,9 +22,11 @@ All commands are `python3 <skill-dir>/scripts/setup.py …`, where
 
 1. Get the address(es) if the user didn't give them. EVM addresses (`0x…`)
    default to Base; pass `--chain` when the user names another chain.
-   Solana addresses are detected automatically.
+   Solana addresses and NEAR accounts (`alice.near`, 64-hex implicit) are
+   detected automatically; a top-level NEAR name without a dot (e.g. `aurora`)
+   needs `--chain near`.
    ```
-   setup.py add <address> [--chain base|ethereum|arbitrum|optimism|polygon] [--name <name>]
+   setup.py add <address> [--chain base|ethereum|arbitrum|optimism|polygon|near] [--name <name>]
    ```
 2. `setup.py install`. If it reports that a different statusLine already
    exists, tell the user and ask before re-running with `--force` (their old
@@ -45,7 +47,7 @@ are opt-in.
 |---|---|
 | "also track SOL" / "add ETH on Base" | `asset add native --chain solana` / `--chain base` |
 | "track gas tokens" (all chains) | `asset add native` |
-| "add token `<CA>`" | `asset add <CA>` (+ `--chain <evm chain>` if it asks) |
+| "add token `<CA>`" | `asset add <CA>` (+ `--chain <evm chain>` if it asks; NEAR contracts like `usdt.tether-token.near` are detected) |
 | "stop counting USDC on Solana" | `asset remove usdc --chain solana` |
 | "remove `<CA>`" / "stop tracking ETH" | `asset remove <CA>` / `asset remove native --chain …` |
 

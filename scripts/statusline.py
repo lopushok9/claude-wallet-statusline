@@ -9,10 +9,11 @@ nor slow down the UI. Standard library only.
 
 Tracked assets (config "assets"; default is USDC on every chain):
   {"chain": "*" | <chain>, "kind": "usdc"}
-  {"chain": "*" | <chain>, "kind": "native"}                  # SOL / ETH / POL
+  {"chain": "*" | <chain>, "kind": "native"}                  # SOL / ETH / POL / NEAR
   {"chain": <chain>, "kind": "token", "address": <CA>, "symbol": "...", "decimals": N}
 "*" applies the entry to every chain that has a tracked wallet.
 """
+import base64
 import hashlib
 import json
 import os
@@ -71,7 +72,15 @@ CHAINS = {
         "llama": "optimism",
         "usdc": "0x0b2c639c533813f4aa9d7837caf62653d097ff85",
         "native": {"symbol": "ETH", "decimals": 18, "price": "coingecko:ethereum"},
-        "rpcs": ["https://optimism-rpc.publicnode.com", "https://mainnet.optimism.io"],
+        "rpcs": ["https://optimism-rpc.publicnode.com", "https://optimism.drpc.org"],
+    },
+    "near": {
+        "kind": "near",
+        "short": "near",
+        "llama": "near",
+        "usdc": "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
+        "native": {"symbol": "NEAR", "decimals": 24, "price": "coingecko:near"},
+        "rpcs": ["https://free.rpc.fastnear.com", "https://near.drpc.org"],
     },
     "polygon": {
         "kind": "evm",
@@ -79,7 +88,7 @@ CHAINS = {
         "llama": "polygon",
         "usdc": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
         "native": {"symbol": "POL", "decimals": 18, "price": "coingecko:polygon-ecosystem-token"},
-        "rpcs": ["https://polygon-bor-rpc.publicnode.com", "https://polygon-rpc.com"],
+        "rpcs": ["https://polygon-bor-rpc.publicnode.com", "https://polygon.drpc.org"],
     },
 }
 
@@ -128,6 +137,27 @@ def fetch_prices(keys):
     return {k.lower(): v for k, v in coins.items()}
 
 
+def near_view(rpcs, contract, method, args):
+    """Call a NEAR view method and decode its JSON result."""
+    result = rpc_with_fallback(rpcs, "query", {
+        "request_type": "call_function", "finality": "final", "account_id": contract,
+        "method_name": method, "args_base64": base64.b64encode(json.dumps(args).encode()).decode(),
+    })
+    return json.loads(bytes(result["result"]).decode())
+
+
+def near_native(rpcs, account):
+    try:
+        result = rpc_with_fallback(rpcs, "query", {
+            "request_type": "view_account", "finality": "final", "account_id": account,
+        })
+    except RuntimeError as err:
+        if "UNKNOWN_ACCOUNT" in str(err) or "does not exist" in str(err):
+            return 0  # implicit account that was never funded
+        raise
+    return int(result["amount"])
+
+
 # ---------------------------------------------------------------- assets
 
 def chain_rpcs(config, chain):
@@ -147,6 +177,8 @@ def asset_spec(chain, entry):
                 "decimals": n["decimals"], "stable": False, "price_key": n["price"]}
     if kind == "token" and entry.get("address"):
         addr = entry["address"]
+        if addr.lower() == c["usdc"].lower():
+            return asset_spec(chain, {"kind": "usdc"})  # same asset as the built-in USDC
         return {"id": addr, "chain": chain, "kind": "token", "address": addr,
                 "symbol": entry.get("symbol") or addr[:6], "decimals": int(entry.get("decimals", 0)),
                 "stable": bool(entry.get("stable")), "price_key": f"{c['llama']}:{addr}"}
@@ -182,6 +214,12 @@ def resolve_assets(config):
 def fetch_balance(config, wallet, asset):
     rpcs = chain_rpcs(config, wallet["chain"])
     addr = wallet["address"]
+    if CHAINS[wallet["chain"]]["kind"] == "near":
+        if asset["kind"] == "native":
+            raw = near_native(rpcs, addr)
+        else:
+            raw = int(near_view(rpcs, asset["address"], "ft_balance_of", {"account_id": addr}) or 0)
+        return raw / 10 ** asset["decimals"]
     if CHAINS[wallet["chain"]]["kind"] == "solana":
         if asset["kind"] == "native":
             return rpc_with_fallback(rpcs, "getBalance", [addr])["value"] / 10 ** asset["decimals"]

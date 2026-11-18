@@ -36,6 +36,7 @@ from statusline import (  # noqa: E402
     HOME_DIR,
     fetch_prices,
     resolve_assets,
+    near_view,
     rpc_with_fallback,
     wallet_chains,
 )
@@ -48,6 +49,14 @@ SETTINGS = Path(os.environ.get("CLAUDE_SETTINGS_PATH") or Path.home() / ".claude
 
 EVM_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 SOLANA_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
+# NEAR account ids: implicit (64 hex) or named (alice.near, x.tg). Top-level names
+# without a dot and ETH-implicit 0x… accounts need an explicit --chain near.
+NEAR_RE = re.compile(r"^(?=.{2,64}$)([a-z\d]+[-_])*[a-z\d]+(\.([a-z\d]+[-_])*[a-z\d]+)*$")
+NEAR_IMPLICIT_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def looks_like_near(address):
+    return bool(NEAR_IMPLICIT_RE.match(address) or ("." in address and NEAR_RE.match(address)))
 EVM_CHAINS = [c for c, spec in CHAINS.items() if spec["kind"] == "evm"]
 
 
@@ -78,6 +87,11 @@ def sync_installed_script():
 
 
 def detect_chain(address, chain):
+    if chain == "near":
+        address = address.lower()
+        if not NEAR_RE.match(address):
+            sys.exit(f"Not a valid NEAR account id: {address}")
+        return "near", address
     if EVM_RE.match(address):
         chain = chain or "base"
         if chain not in EVM_CHAINS:
@@ -87,7 +101,9 @@ def detect_chain(address, chain):
         if chain not in (None, "solana"):
             sys.exit(f"{address} looks like a Solana address, not {chain}")
         return "solana", address
-    sys.exit(f"Not a valid EVM (0x…) or Solana address: {address}")
+    if looks_like_near(address.lower()):
+        return "near", address.lower()
+    sys.exit(f"Not a valid EVM (0x…), Solana or NEAR address: {address}")
 
 
 def cmd_add(args):
@@ -180,7 +196,15 @@ def token_metadata(config, chain, address):
         pass
     symbol, decimals = meta.get("symbol"), meta.get("decimals")
     rpcs = (config.get("rpc") or {}).get(chain) or CHAINS[chain]["rpcs"]
-    if CHAINS[chain]["kind"] == "solana":
+    if CHAINS[chain]["kind"] == "near":
+        if decimals is None or not symbol:
+            try:
+                ft = near_view(rpcs, address, "ft_metadata", {})
+            except Exception as err:
+                raise ValueError(f"{address} is not a NEAR fungible token ({err})")
+            symbol = symbol or ft.get("symbol")
+            decimals = ft.get("decimals") if decimals is None else decimals
+    elif CHAINS[chain]["kind"] == "solana":
         if decimals is None:
             acc = rpc_with_fallback(rpcs, "getAccountInfo", [address, {"encoding": "jsonParsed"}])["value"]
             parsed = (acc or {}).get("data", {})
@@ -219,11 +243,15 @@ def parse_asset_target(what, chain, config):
         if chain not in EVM_CHAINS:
             sys.exit(f"{what} is an EVM contract; --chain must be one of: {', '.join(EVM_CHAINS)}")
         return "token", chain, what.lower()
+    if chain == "near" or (chain is None and looks_like_near(what.lower())):
+        if not NEAR_RE.match(what.lower()):
+            sys.exit(f"Not a valid NEAR contract id: {what}")
+        return "token", "near", what.lower()
     if SOLANA_RE.match(what):
         if chain not in (None, "solana"):
             sys.exit(f"{what} looks like a Solana mint, not a {chain} contract")
         return "token", "solana", what
-    sys.exit(f"Expected usdc, native or a token contract address, got: {what}")
+    sys.exit(f"Expected usdc, native or a token contract address, got: {what}")  # noqa
 
 
 def entry_matches(e, kind, chain, address):
@@ -235,6 +263,11 @@ def entry_matches(e, kind, chain, address):
 def cmd_asset_add(args):
     config = load_config()
     kind, chain, address = parse_asset_target(args.what.strip(), args.chain, config)
+    if kind == "token" and address.lower() == CHAINS[chain]["usdc"].lower():
+        kind, address = "usdc", None  # that contract is the built-in USDC
+        if any(e.get("kind") == "usdc" and e.get("chain") == "*" for e in config.get("assets", DEFAULT_ASSETS)):
+            print(f"Already tracked: that contract is USDC, which is counted on every chain.")
+            return
     assets = config.setdefault("assets", [dict(a) for a in DEFAULT_ASSETS])
     if any(entry_matches(e, kind, chain, address) for e in assets):
         print("Already tracked.")
@@ -388,7 +421,7 @@ def main():
 
     p = sub.add_parser("add", help="track a public address")
     p.add_argument("address")
-    p.add_argument("--chain", choices=list(CHAINS), help="EVM chain (default: base); Solana is auto-detected")
+    p.add_argument("--chain", choices=list(CHAINS), help="EVM chain (default: base); Solana and NEAR (x.near, 64-hex) are auto-detected")
     p.add_argument("--name")
     p.set_defaults(func=cmd_add)
 
